@@ -25,9 +25,9 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/unknown/peasy-jobs#readme"
-Issues = "https://github.com/unknown/peasy-jobs/issues"
-Source = "https://github.com/unknown/peasy-jobs"
+Documentation = "https://github.com/d-flood/peasy-jobs#readme"
+Issues = "https://github.com/d-flood/peasy-jobs/issues"
+Source = "https://github.com/d-flood/peasy-jobs"
 
 [tool.hatch.version]
 path = "src/peasy_jobs/__about__.py"
