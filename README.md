@@ -1,9 +1,9 @@
 # Peasy Jobs
 
-<!-- [![PyPI - Version](https://img.shields.io/pypi/v/peasy-jobs.svg)](https://pypi.org/project/peasy-jobs)
+[![PyPI - Version](https://img.shields.io/pypi/v/peasy-jobs.svg)](https://pypi.org/project/peasy-jobs)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/peasy-jobs.svg)](https://pypi.org/project/peasy-jobs)
 
------ -->
+-----
 
 An _incredibly_ simple database-based background worker for Django. It is an "easy peasy" option for those who do not have a very busy task queue.
 
