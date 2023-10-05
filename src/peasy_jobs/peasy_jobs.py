@@ -57,12 +57,6 @@ class PeasyJob:
         """A decorator to add a callable to the job dictionary
         at startup, then enques jobs during runtime.
         Decorator takes a title argument."""
-        # self.register_job_definition(func)
-        # def wrapper(*args, **kwargs):
-        #     print(f'In wrapper: {args=} {kwargs=}')
-        #     job_name = f'{func.__module__}.{func.__name__}'
-        #     self.enqueue_job(job_name, args, kwargs)
-        # return wrapper
         def decorator(func):
             self.register_job_definition(func)
             def wrapper(*args, **kwargs):
