@@ -1,3 +1,6 @@
+import logging
+from venv import logger
+
 from django.conf import settings
 from django.core.management import call_command
 
@@ -7,6 +10,8 @@ import pickle
 from peasy_jobs.models import PeasyJobQueue
 
 
+
+logger = logging.getLogger(__name__)
 
 class PeasyJob:
     """A class for collecting and executing asynchronous jobs."""
@@ -51,7 +56,7 @@ class PeasyJob:
             raise ValueError(f'Job name "{job_name}" already exists in job definitions.')
         self.job_definitions[job_name] = func
         if os.getenv('PEASY_RUNNER', False):
-            print(f'registered job: {job_name}')
+            logger.info(f'registered job: {job_name}')
 
     def job(self, title: str):
         """A decorator to add a callable to the job dictionary
@@ -95,15 +100,13 @@ class PeasyJob:
     def execute_job(self, job_pk: int):
         """Execute a job from the db queue."""
         job = PeasyJobQueue.objects.get(pk=job_pk)
-        print(f'executing {job.title}')
+        logger.info(f'executing {job.title}')
         job_name = job.job_name
         args: tuple = pickle.loads(job.pickled_args)
-        print(f'{args=}')
         if job.pickled_kwargs:
             kwargs: dict[str] = pickle.loads(job.pickled_kwargs)
         else:
             kwargs = {}
-        print(f'{kwargs=}')
         try:
             PeasyJobQueue.objects.filter(pk=job_pk).update(
                 doing_now='Starting...',
