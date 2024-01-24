@@ -109,7 +109,7 @@ class PeasyJob:
             kwargs = {}
         try:
             PeasyJobQueue.objects.filter(pk=job_pk).update(
-                doing_now='Starting...',
+                doing_now='Starting...', started=True,
             )
             try:
                 self.job_definitions[job_name](*args, job_pk=job_pk, **kwargs)

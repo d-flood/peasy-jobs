@@ -17,6 +17,7 @@ class PeasyJobQueue(models.Model):
     complete = models.BooleanField(default=False)
     failed = models.BooleanField(default=False)
     created = models.DateTimeField(auto_now_add=True)
+    cancelled = models.BooleanField(default=False)
 
     def save(self, *args, **kwargs):
         completed = PeasyJobQueue.objects.filter(complete=True)
