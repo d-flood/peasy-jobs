@@ -149,6 +149,7 @@ class PeasyJob:
                 job.started = True
                 job.save()
                 call_command('execute_job', job.pk)
+                continue
             else:
                 sleep(self.polling_interval)
 
