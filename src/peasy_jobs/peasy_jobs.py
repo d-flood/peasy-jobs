@@ -116,12 +116,12 @@ class PeasyJob:
             except TypeError as e:
                 self.job_definitions[job_name](*args, **kwargs)
         except Exception as e:
+            logger.exception(e)
             PeasyJobQueue.objects.filter(pk=job_pk).update(
-                doing_now='Failed',
+                doing_now=f'Failed: {e}',
                 complete=False,
                 failed=True,
             )
-            raise e
         else:
             PeasyJobQueue.objects.filter(pk=job_pk).update(
                 doing_now='Complete',
