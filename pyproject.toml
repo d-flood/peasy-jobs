@@ -18,6 +18,7 @@ classifiers = [
   "Programming Language :: Python",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: Implementation :: CPython",
 ]
 dependencies = [
@@ -36,9 +37,11 @@ path = "src/peasy_jobs/__about__.py"
 dependencies = [
   "coverage[toml]>=6.5",
   "pytest",
+  "pytest-django",
 ]
+
 [tool.hatch.envs.default.scripts]
-test = "pytest {args:tests}"
+test = "pytest {args:tests,-vv}"
 test-cov = "coverage run -m pytest {args:tests}"
 cov-report = [
   "- coverage combine",
@@ -50,7 +53,7 @@ cov = [
 ]
 
 [[tool.hatch.envs.all.matrix]]
-python = ["3.10", "3.11"]
+python = ["3.10", "3.11", "3.12"]
 
 [tool.hatch.envs.lint]
 detached = true
@@ -58,6 +61,7 @@ dependencies = [
   "black>=23.1.0",
   "ruff>=0.0.243",
 ]
+
 [tool.hatch.envs.lint.scripts]
 style = [
   "ruff {args:.}",
@@ -72,6 +76,10 @@ all = [
   "style",
   "typing",
 ]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "core.settings"
+pythonpath = "tests"
 
 [tool.black]
 target-version = ["py310"]

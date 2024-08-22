@@ -1,4 +1,3 @@
-from tkinter.messagebox import CANCEL
 from django.db import models
 from django.conf import settings
 
