@@ -74,8 +74,20 @@ class PeasyJob:
         else:
             self.worker_type = "process"
 
+        if hasattr(settings, "PEASY_SHUTDOWN_TIMEOUT"):
+            if not isinstance(settings.PEASY_SHUTDOWN_TIMEOUT, (int, float)):
+                raise TypeError("PEASY_SHUTDOWN_TIMEOUT must be a number representing seconds.")
+            elif settings.PEASY_SHUTDOWN_TIMEOUT < 0:
+                raise ValueError("PEASY_SHUTDOWN_TIMEOUT must be greater than or equal to 0")
+            self.shutdown_timeout = settings.PEASY_SHUTDOWN_TIMEOUT
+        else:
+            self.shutdown_timeout = 30  # default 30 seconds wait
+
         self.job_definitions = {}
         self.running = True
+        self.shutting_down = False
+        self._shutdown_start_time = None
+        self._active_processes = manager.dict()
 
     def register_job_definition(self, func, *args, **kwargs):
         """Add a callable to the job dictionary."""
@@ -108,13 +120,13 @@ class PeasyJob:
             raise ValueError(f'Job name "{job_name}" not found in job definitions.')
         try:
             args = pickle.dumps(args)
-        except TypeError:
-            raise TypeError("Job arguments must be pickleable.")
+        except TypeError as e:
+            raise TypeError("Job arguments must be pickleable.") from e
         if kwargs is not None:
             try:
                 kwargs = pickle.dumps(kwargs)
-            except TypeError:
-                raise TypeError("Job keyword arguments must be pickleable.")
+            except TypeError as e:
+                raise TypeError("Job keyword arguments must be pickleable.") from e
 
         PeasyJobQueue.objects.create(
             job_name=job_name,
@@ -133,9 +145,9 @@ class PeasyJob:
         job = PeasyJobQueue.objects.get(pk=job_pk)
         logger.info(f"executing {job.title}")
         job_name = job.job_name
-        args: tuple = pickle.loads(job.pickled_args)
+        args: tuple = pickle.loads(job.pickled_args)  # noqa
         if job.pickled_kwargs:
-            kwargs: dict[str] = pickle.loads(job.pickled_kwargs)
+            kwargs: dict[str] = pickle.loads(job.pickled_kwargs)  # noqa
         else:
             kwargs = {}
         try:
@@ -189,21 +201,38 @@ class PeasyJob:
     def run_job_command_with_pid_tracking(self, job_id):
         pid = os.getpid()
         pids_map[job_id] = pid
+        self._active_processes[pid] = job_id
         try:
             self.run_job_command(job_id)
         finally:
-            del pids_map[job_id]
+            if pid in self._active_processes:
+                del self._active_processes[pid]
+            if job_id in pids_map:
+                del pids_map[job_id]
             connection.close()
 
-    def terminate_child_process(job_id):
+    def terminate_child_process(self, job_id):
+        """Gracefully terminate a child process."""
         pid = pids_map.get(job_id)
         if pid:
-            os.kill(pid, signal.SIGTERM)
+            try:
+                os.kill(pid, signal.SIGTERM)
+                # Give the process some time to cleanup
+                sleep(0.5)
+                # Force kill if still running
+                if pid in self._active_processes:
+                    os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # Process already terminated
+            finally:
+                if job_id in pids_map:
+                    del pids_map[job_id]
 
+    @staticmethod
     def update_status(
         job_pk: int,
         status_msg: str,
-        extra: dict = None,
+        extra: dict | None = None,
     ):
         if extra:
             PeasyJobQueue.objects.filter(pk=job_pk).update(
@@ -215,38 +244,78 @@ class PeasyJob:
                 status_msg=status_msg,
             )
 
-    def sigint_handler(self, signum, frame):
-        logger.info("SIGINT received. Exiting.")
-        self.running = False
+    def sigint_handler(self, signum, frame):  # noqa
+        if not self.shutting_down:
+            logger.info("SIGINT received. Initiating graceful shutdown...")
+            self.shutting_down = True
+            self._shutdown_start_time = timezone.now()
+        else:
+            logger.info("Second interrupt received. Forcing shutdown...")
+            self.running = False
 
     def run(self):
         signal.signal(signal.SIGINT, self.sigint_handler)
+        signal.signal(signal.SIGTERM, self.sigint_handler)
 
         executor_class = ThreadPoolExecutor if self.worker_type == "thread" else ProcessPoolExecutor
 
         with executor_class(max_workers=self.concurrency) as executor:
             while self.running:
                 try:
+                    # Check shutdown timeout
+                    if self.shutting_down:
+                        if not self._active_processes:
+                            logger.info("All jobs completed. Shutting down...")
+                            self.running = False
+                            break
+
+                        elapsed = (timezone.now() - self._shutdown_start_time).total_seconds()
+                        if elapsed >= self.shutdown_timeout:
+                            logger.info("Shutdown timeout reached. Terminating remaining jobs...")
+                            self.running = False
+                            break
+
+                        sleep(0.5)  # Short sleep while waiting for jobs to complete
+                        continue
+
+                    # Handle cancelled jobs
                     cancelled_ongoing_jobs = PeasyJobQueue.objects.filter(
                         status=PeasyJobQueue.CANCELLED, started__isnull=False, completed__isnull=True
                     )
                     for job in cancelled_ongoing_jobs:
                         self.terminate_child_process(job.pk)
-                        job.completed = timezone.now()
-                        job.status_msg = "Cancelled"
-                        job.save()
-                    with transaction.atomic():
-                        jobs = PeasyJobQueue.objects.select_for_update().filter(status=PeasyJobQueue.ENQUEUED)
-                        job_ids = list(jobs.values_list("pk", flat=True)[: self.concurrency])
+                        with transaction.atomic():
+                            job.completed = timezone.now()
+                            job.status_msg = "Cancelled"
+                            job.save()
+
+                    # Only process new jobs if not shutting down
+                    if not self.shutting_down:
+                        with transaction.atomic():
+                            jobs = PeasyJobQueue.objects.select_for_update().filter(status=PeasyJobQueue.ENQUEUED)
+                            job_ids = list(jobs.values_list("pk", flat=True)[: self.concurrency])
+                            if job_ids:
+                                PeasyJobQueue.objects.filter(pk__in=job_ids).update(
+                                    status=PeasyJobQueue.ONGOING, started=timezone.now()
+                                )
+
                         if job_ids:
-                            jobs.update(status=PeasyJobQueue.ONGOING)
-                    if job_ids:
-                        executor.map(self.run_job_command_with_pid_tracking, job_ids)
-                    else:
-                        sleep(self.polling_interval)
+                            executor.map(self.run_job_command_with_pid_tracking, job_ids)
+                        else:
+                            sleep(self.polling_interval)
+
                 except Exception as e:
                     logger.exception(e)
                     sleep(self.polling_interval)
+
+            # Cleanup on shutdown
+            for job_id in list(pids_map.keys()):
+                self.terminate_child_process(job_id)
+
+            # Update status of any remaining ongoing jobs
+            PeasyJobQueue.objects.filter(status=PeasyJobQueue.ONGOING).update(
+                status=PeasyJobQueue.FAILED, status_msg="Job interrupted during shutdown", completed=timezone.now()
+            )
 
 
 peasy = PeasyJob()
