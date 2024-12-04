@@ -6,6 +6,6 @@ from peasy_jobs.peasy_jobs import peasy
 class Command(BaseCommand):
     help = "Starts the Peasy Job Runner."
 
-    def handle(self):
+    def handle(self, *args, **options):
         peasy.run()
         self.stdout.write("Exited Peasy Job Runner.")
