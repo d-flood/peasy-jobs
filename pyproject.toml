@@ -40,6 +40,9 @@ Source = "https://github.com/d-flood/peasy-jobs"
 [tool.hatch.version]
 path = "src/peasy_jobs/__about__.py"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/peasy_jobs"]
+
 [tool.hatch.envs.default]
 dependencies = ["coverage[toml]>=6.5", "pytest"]
 [tool.hatch.envs.default.scripts]
