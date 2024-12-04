@@ -2,8 +2,9 @@ import logging
 import os
 import pickle
 import signal
+from calendar import c
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from multiprocessing import Manager, Pool
+from multiprocessing import Manager
 from time import sleep
 
 from django.conf import settings
@@ -14,8 +15,20 @@ from django.utils import timezone
 from peasy_jobs.models import PeasyJobQueue
 
 logger = logging.getLogger(__name__)
+
+# Add console handler if none exists
+if not logger.handlers:
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    logger.setLevel(logging.INFO)
+
 manager = Manager()
 pids_map = manager.dict()
+
+MINIMUM_ALLOWED_POLLING_INTERVAL = 0.01
 
 
 class PeasyJob:
@@ -52,7 +65,7 @@ class PeasyJob:
         if hasattr(settings, "PEASY_POLLING_INTERVAL"):
             if not isinstance(settings.PEASY_POLLING_INTERVAL, int | float):
                 raise TypeError("PEASY_POLLING_INTERVAL must be a float (or integer) representing seconds.")
-            elif settings.PEASY_POLLING_INTERVAL < 0.01:
+            elif settings.PEASY_POLLING_INTERVAL < MINIMUM_ALLOWED_POLLING_INTERVAL:
                 raise ValueError("PEASY_POLLING_INTERVAL must be greater than or equal to 0.01")
             self.polling_interval = settings.PEASY_POLLING_INTERVAL
         else:
@@ -75,7 +88,7 @@ class PeasyJob:
             self.worker_type = "process"
 
         if hasattr(settings, "PEASY_SHUTDOWN_TIMEOUT"):
-            if not isinstance(settings.PEASY_SHUTDOWN_TIMEOUT, (int, float)):
+            if not isinstance(settings.PEASY_SHUTDOWN_TIMEOUT, int | float):
                 raise TypeError("PEASY_SHUTDOWN_TIMEOUT must be a number representing seconds.")
             elif settings.PEASY_SHUTDOWN_TIMEOUT < 0:
                 raise ValueError("PEASY_SHUTDOWN_TIMEOUT must be greater than or equal to 0")
@@ -89,14 +102,13 @@ class PeasyJob:
         self._shutdown_start_time = None
         self._active_processes = manager.dict()
 
-    def register_job_definition(self, func, *args, **kwargs):
+    def register_job_definition(self, func):
         """Add a callable to the job dictionary."""
         job_name = f"{func.__module__}.{func.__name__}"
         if job_name in self.job_definitions.keys():
             raise ValueError(f'Job name "{job_name}" already exists in job definitions.')
         self.job_definitions[job_name] = func
-        if os.getenv("PEASY_RUNNER", False):
-            logger.info(f"registered job: {job_name}")
+        logger.info(f"Registered job: {job_name}")
 
     def job(self, title: str):
         """A decorator to add a callable to the job dictionary
@@ -114,7 +126,7 @@ class PeasyJob:
 
         return decorator
 
-    def enqueue_job(self, job_name: str, title, args: tuple, kwargs: dict = None):
+    def enqueue_job(self, job_name: str, title, args: tuple, kwargs: dict | None = None):
         """Add a job to the db queue."""
         if job_name not in self.job_definitions.keys():
             raise ValueError(f'Job name "{job_name}" not found in job definitions.')
@@ -134,10 +146,7 @@ class PeasyJob:
             pickled_kwargs=kwargs,
             title=title,
             status_msg="Enqueued",
-            progress=0,
-            started=False,
-            complete=False,
-            failed=False,
+            status=PeasyJobQueue.ENQUEUED,
         )
 
     def execute_job(self, job_pk: int):
@@ -151,20 +160,17 @@ class PeasyJob:
         else:
             kwargs = {}
         try:
-            PeasyJobQueue.objects.filter(pk=job_pk).update(
-                status_msg="Starting...",
-                started=True,
-            )
+            result = None
             try:
                 result = self.job_definitions[job_name](*args, job_pk=job_pk, **kwargs)
-            except TypeError as e:
-                self.job_definitions[job_name](*args, **kwargs)
+            except TypeError:
+                result = self.job_definitions[job_name](*args, **kwargs)
         except Exception as e:
             logger.exception(e)
             PeasyJobQueue.objects.filter(pk=job_pk).update(
                 status_msg=f"Failed: {e}",
-                complete=False,
-                failed=True,
+                completed=timezone.now(),
+                status=PeasyJobQueue.FAILED,
             )
         else:
             try:
@@ -178,6 +184,7 @@ class PeasyJob:
                 status_msg=status_msg,
                 result=pickled_result,
                 status=PeasyJobQueue.COMPLETED,
+                completed=timezone.now(),
             )
 
     def cancel_job(self, job_pk: int):
@@ -249,9 +256,6 @@ class PeasyJob:
             logger.info("SIGINT received. Initiating graceful shutdown...")
             self.shutting_down = True
             self._shutdown_start_time = timezone.now()
-        else:
-            logger.info("Second interrupt received. Forcing shutdown...")
-            self.running = False
 
     def run(self):
         signal.signal(signal.SIGINT, self.sigint_handler)
@@ -272,6 +276,17 @@ class PeasyJob:
                         elapsed = (timezone.now() - self._shutdown_start_time).total_seconds()
                         if elapsed >= self.shutdown_timeout:
                             logger.info("Shutdown timeout reached. Terminating remaining jobs...")
+                            # Cleanup and update status of remaining jobs
+                            to_terminate = PeasyJobQueue.objects.filter(status=PeasyJobQueue.ONGOING)
+                            if to_terminate.exists():
+                                logger.info(f"Terminating {to_terminate.count()} remaining jobs...")
+                                to_terminate.update(
+                                    status=PeasyJobQueue.FAILED,
+                                    status_msg="Job interrupted - shutdown timeout reached",
+                                    completed=timezone.now(),
+                                )
+                                for job_pid in list(pids_map.keys()):
+                                    self.terminate_child_process(job_pid)
                             self.running = False
                             break
 
@@ -296,7 +311,7 @@ class PeasyJob:
                             job_ids = list(jobs.values_list("pk", flat=True)[: self.concurrency])
                             if job_ids:
                                 PeasyJobQueue.objects.filter(pk__in=job_ids).update(
-                                    status=PeasyJobQueue.ONGOING, started=timezone.now()
+                                    status=PeasyJobQueue.ONGOING, started=timezone.now(), status_msg="Starting..."
                                 )
 
                         if job_ids:
@@ -308,14 +323,15 @@ class PeasyJob:
                     logger.exception(e)
                     sleep(self.polling_interval)
 
-            # Cleanup on shutdown
-            for job_id in list(pids_map.keys()):
-                self.terminate_child_process(job_id)
+            # Only handle remaining ongoing jobs if we didn't already do it in timeout
+            if not self.shutting_down:
+                # Cleanup on normal shutdown
+                for job_pid in list(pids_map.keys()):
+                    self.terminate_child_process(job_pid)
 
-            # Update status of any remaining ongoing jobs
-            PeasyJobQueue.objects.filter(status=PeasyJobQueue.ONGOING).update(
-                status=PeasyJobQueue.FAILED, status_msg="Job interrupted during shutdown", completed=timezone.now()
-            )
+                PeasyJobQueue.objects.filter(status=PeasyJobQueue.ONGOING).update(
+                    status=PeasyJobQueue.FAILED, status_msg="Job interrupted during shutdown", completed=timezone.now()
+                )
 
 
 peasy = PeasyJob()
