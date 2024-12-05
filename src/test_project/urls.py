@@ -19,15 +19,21 @@ from django.contrib import admin
 from django.http import HttpResponse
 from django.urls import path
 
-from test_project.jobs import test_job
+from test_project.jobs import job_should_fail, job_should_succeed
 
 
-def test_job_view(request):
-    test_job()
+def job_view_successful(request):  # noqa
+    job_should_succeed()
+    return HttpResponse("Test job was queued")
+
+
+def job_view_failed(request):  # noqa
+    job_should_fail()
     return HttpResponse("Test job was queued")
 
 
 urlpatterns = [
     path("admin/", admin.site.urls),
-    path("test_job/", test_job_view),
+    path("test_job/", job_view_successful),
+    path("test_job_fail/", job_view_failed),
 ]
