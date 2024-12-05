@@ -2,7 +2,6 @@ import logging
 import os
 import pickle
 import signal
-from calendar import c
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from multiprocessing import Manager
 from time import sleep
@@ -257,7 +256,7 @@ class PeasyJob:
             self.shutting_down = True
             self._shutdown_start_time = timezone.now()
 
-    def run(self):
+    def run(self, *, exit_when_queue_empty: bool):
         signal.signal(signal.SIGINT, self.sigint_handler)
         signal.signal(signal.SIGTERM, self.sigint_handler)
 
@@ -306,6 +305,15 @@ class PeasyJob:
 
                     # Only process new jobs if not shutting down
                     if not self.shutting_down:
+                        # Check if we should exit due to empty queue
+                        if exit_when_queue_empty:
+                            if not PeasyJobQueue.objects.filter(
+                                status__in=(PeasyJobQueue.ENQUEUED, PeasyJobQueue.ONGOING)
+                            ).exists():
+                                logger.info("Queue is empty. Exiting as requested...")
+                                self.running = False
+                                break
+
                         with transaction.atomic():
                             jobs = PeasyJobQueue.objects.select_for_update().filter(status=PeasyJobQueue.ENQUEUED)
                             job_ids = list(jobs.values_list("pk", flat=True)[: self.concurrency])
