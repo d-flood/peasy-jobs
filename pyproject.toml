@@ -37,6 +37,7 @@ Documentation = "https://github.com/d-flood/peasy-jobs#readme"
 Issues = "https://github.com/d-flood/peasy-jobs/issues"
 Source = "https://github.com/d-flood/peasy-jobs"
 
+
 [tool.hatch.version]
 path = "src/peasy_jobs/__about__.py"
 
@@ -44,6 +45,8 @@ path = "src/peasy_jobs/__about__.py"
 packages = ["src/peasy_jobs"]
 
 [tool.hatch.envs.default]
+installer = "uv"
+path = ".venv"
 dependencies = ["coverage[toml]>=6.5", "pytest", "pytest-django"]
 
 [tool.hatch.envs.default.scripts]
@@ -58,6 +61,7 @@ python = ["3.11", "3.12", "3.13"]
 [tool.hatch.envs.lint]
 detached = true
 dependencies = ["black>=23.1.0", "ruff>=0.0.243"]
+
 [tool.hatch.envs.lint.scripts]
 style = ["ruff {args:.}", "black --check --diff {args:.}"]
 fmt = ["black {args:.}", "ruff --fix {args:.}", "style"]
