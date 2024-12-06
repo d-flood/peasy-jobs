@@ -26,8 +26,9 @@ authors = [
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: Implementation :: CPython",
 ]
 dependencies = ["Django>=4.2"]
@@ -50,6 +51,7 @@ path = ".venv"
 dependencies = ["coverage[toml]>=6.5", "pytest", "pytest-django"]
 
 [tool.hatch.envs.default.scripts]
+dev = "python src/manage.py runserver"
 test = "pytest {args:src/test_project}"
 test-cov = "coverage run -m pytest {args:tests}"
 cov-report = ["- coverage combine", "coverage report"]
