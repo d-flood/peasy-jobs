@@ -71,7 +71,7 @@ PEASY_SHUTDOWN_TIMEOUT = 30 # grace seconds to wait for jobs to complete after r
 
 When a job is called by the main Django application, a `PeasyJobQueue` object is created and added to the database. You can query this object both to track whether a background job was successful _and_ to manually add status updates to it (progress percentage, for example).
 
-Peasy will update the status of the job on the edges of its work, i.e., the beginning and ending of the job. This includes whether the job succeeded, failed, or was cancelled. However, you can use `PeasyJobQueue.extra` to store an arbitrary dictionary for updating the job status throughout a background task.
+Peasy will update the status of the job on the edges of its work, i.e., the beginning and ending of the job. This includes whether the job succeeded, failed, or was cancelled. However, you can use `PeasyJobQueue.status_msg` and `PeasyJobQueue.extra` to store a string and arbitrary dictionary (respectively) for updating the job status throughout a background task.
 
 Peasy will conveniently inject the `PeasyJobQueue` `pk` as an argument to your job function _if_ you add `job_pk` as an argument (and obviously, don't supply a value for it yourself from the calling code).
 
@@ -83,10 +83,10 @@ from peasy_jobs.peasy_jobs import peasy
 @peasy.job("export data to s3")
 def generate_large_data_export(job_pk: int): # add job_pk here and it will automatically be injected.
     data = gather_data()
-    PeasyJobQueue.objects.filter(pk=job_pk).update(extra={ # use the `extra` field for an arbitrary dictionary
-        "progress": 50,
-        "doing_now": "Succesfully gathered data. Now uploading data to s3."
-    })
+    peasy.update_status( # a convenience method for updating a peasy job status
+        job_pk,
+        status_msg="Succesfully gathered data. Now uploading data to s3.",
+        extra={"progress": 50}) # use the `extra` field to optionally store an arbitrary dictionary.
     upload_data_to_s3(data)
 ```
 
