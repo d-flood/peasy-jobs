@@ -15,7 +15,6 @@ from peasy_jobs.models import PeasyJobQueue
 
 logger = logging.getLogger(__name__)
 
-# Add console handler if none exists
 if not logger.handlers:
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
@@ -27,13 +26,22 @@ if not logger.handlers:
 manager = Manager()
 pids_map = manager.dict()
 
+# Default settings
 MINIMUM_ALLOWED_POLLING_INTERVAL = 0.01
+PEASY_MAX_COMPLETED = 10
+PEASY_MAX_FAILED = 10
+PEASY_MAX_CANCELLED = 10
+PEASY_POLLING_INTERVAL = 2
+PEASY_CONCURRENCY = 1
+PEASY_WORKER_TYPE = "process"
+PEASY_SHUTDOWN_TIMEOUT = 30
 
 
 class PeasyJob:
     """A class for collecting and executing asynchronous jobs."""
 
     def __init__(self):
+        # max number of completed jobs to keep in the db
         if hasattr(settings, "PEASY_MAX_COMPLETED"):
             if not isinstance(settings.PEASY_MAX_COMPLETED, int):
                 raise TypeError("PEASY_MAX_COMPLETED must be an integer.")
@@ -41,8 +49,8 @@ class PeasyJob:
                 raise ValueError("PEASY_MAX_COMPLETED must be greater than or equal to 0.")
             self.max_completed = settings.PEASY_MAX_COMPLETED
         else:
-            self.max_completed = 10
-
+            self.max_completed = PEASY_MAX_COMPLETED
+        # max number of failed jobs to keep in the db
         if hasattr(settings, "PEASY_MAX_FAILED"):
             if not isinstance(settings.PEASY_MAX_FAILED, int):
                 raise TypeError("PEASY_MAX_FAILED must be an integer.")
@@ -50,8 +58,8 @@ class PeasyJob:
                 raise ValueError("PEASY_MAX_FAILED must be greater than or equal to 0.")
             self.max_failed = settings.PEASY_MAX_FAILED
         else:
-            self.max_failed = 10
-
+            self.max_failed = PEASY_MAX_FAILED
+        # max number of cancelled jobs to keep in the db
         if hasattr(settings, "PEASY_MAX_CANCELLED"):
             if not isinstance(settings.PEASY_MAX_CANCELLED, int):
                 raise TypeError("PEASY_MAX_CANCELLED must be an integer.")
@@ -59,8 +67,8 @@ class PeasyJob:
                 raise ValueError("PEASY_MAX_CANCELLED must be greater than or equal to 0.")
             self.max_cancelled = settings.PEASY_MAX_CANCELLED
         else:
-            self.max_cancelled = 10
-
+            self.max_cancelled = PEASY_MAX_CANCELLED
+        # how long to wait between checking for new jobs
         if hasattr(settings, "PEASY_POLLING_INTERVAL"):
             if not isinstance(settings.PEASY_POLLING_INTERVAL, int | float):
                 raise TypeError("PEASY_POLLING_INTERVAL must be a float (or integer) representing seconds.")
@@ -68,8 +76,8 @@ class PeasyJob:
                 raise ValueError("PEASY_POLLING_INTERVAL must be greater than or equal to 0.01")
             self.polling_interval = settings.PEASY_POLLING_INTERVAL
         else:
-            self.polling_interval = 2
-
+            self.polling_interval = PEASY_POLLING_INTERVAL
+        # max number of jobs to run concurrently
         if hasattr(settings, "PEASY_CONCURRENCY"):
             if not isinstance(settings.PEASY_MAX_CONCURRENCY, int):
                 raise TypeError("PEASY_CONCURRENCY must be an integer.")
@@ -77,15 +85,15 @@ class PeasyJob:
                 raise ValueError("PEASY_CONCURRENCY must be greater than or equal to 1.")
             self.concurrency = settings.PEASY_MAX_CONCURRENCY
         else:
-            self.concurrency = 1
-
+            self.concurrency = PEASY_CONCURRENCY
+        # whether to use threads or processes for concurrent job execution
         if hasattr(settings, "PEASY_WORKER_TYPE"):
             if settings.PEASY_WORKER_TYPE not in ("thread", "process"):
                 raise ValueError('PEASY_WORKER_TYPE must be either "thread" or "process".')
             self.worker_type = settings.PEASY_WORKER_TYPE
         else:
-            self.worker_type = "process"
-
+            self.worker_type = PEASY_WORKER_TYPE
+        # on a sigint, how long to wait for jobs to complete before terminating them
         if hasattr(settings, "PEASY_SHUTDOWN_TIMEOUT"):
             if not isinstance(settings.PEASY_SHUTDOWN_TIMEOUT, int | float):
                 raise TypeError("PEASY_SHUTDOWN_TIMEOUT must be a number representing seconds.")
@@ -93,7 +101,7 @@ class PeasyJob:
                 raise ValueError("PEASY_SHUTDOWN_TIMEOUT must be greater than or equal to 0")
             self.shutdown_timeout = settings.PEASY_SHUTDOWN_TIMEOUT
         else:
-            self.shutdown_timeout = 30  # default 30 seconds wait
+            self.shutdown_timeout = PEASY_SHUTDOWN_TIMEOUT
 
         self.job_definitions = {}
         self.running = True
@@ -160,9 +168,9 @@ class PeasyJob:
             kwargs = {}
         try:
             result = None
-            try:
+            try:  # try to inject job_pk into the job function
                 result = self.job_definitions[job_name](*args, job_pk=job_pk, **kwargs)
-            except TypeError:
+            except TypeError:  # user has chosen not to accept the injected job_pk
                 result = self.job_definitions[job_name](*args, **kwargs)
         except Exception as e:
             logger.exception(e)
