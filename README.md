@@ -5,7 +5,7 @@
 
 ---
 
-An _incredibly_ simple database-queue and background worker for Django. It is an "easy peasy" option for those who do not have a very busy task queue.
+An _incredibly_ simple database queue and background worker for Django. It is an "easy peasy" option for those who do not have a very busy task queue.
 
 **Table of Contents**
 
