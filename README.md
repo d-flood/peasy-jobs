@@ -2,6 +2,7 @@
 
 [![PyPI - Version](https://img.shields.io/pypi/v/peasy-jobs.svg)](https://pypi.org/project/peasy-jobs)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/peasy-jobs.svg)](https://pypi.org/project/peasy-jobs)
+![tests status badge](https://github.com/d-flood/peasy-jobs/actions/workflows/tests.yml/badge.svg?branch=main)
 
 ---
 
