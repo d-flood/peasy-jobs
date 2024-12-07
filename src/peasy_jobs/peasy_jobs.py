@@ -322,7 +322,7 @@ class PeasyJob:
                                 self.running = False
                                 break
 
-                        jobs = PeasyJobQueue.objects.select_for_update().filter(status=PeasyJobQueue.ENQUEUED)
+                        jobs = PeasyJobQueue.objects.filter(status=PeasyJobQueue.ENQUEUED)
                         job_ids = list(jobs.values_list("pk", flat=True)[: self.concurrency])
                         if job_ids:
                             PeasyJobQueue.objects.filter(pk__in=job_ids).update(
