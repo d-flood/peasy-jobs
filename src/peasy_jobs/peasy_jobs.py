@@ -322,13 +322,12 @@ class PeasyJob:
                                 self.running = False
                                 break
 
-                        with transaction.atomic():
-                            jobs = PeasyJobQueue.objects.select_for_update().filter(status=PeasyJobQueue.ENQUEUED)
-                            job_ids = list(jobs.values_list("pk", flat=True)[: self.concurrency])
-                            if job_ids:
-                                PeasyJobQueue.objects.filter(pk__in=job_ids).update(
-                                    status=PeasyJobQueue.ONGOING, started=timezone.now(), status_msg="Starting..."
-                                )
+                        jobs = PeasyJobQueue.objects.select_for_update().filter(status=PeasyJobQueue.ENQUEUED)
+                        job_ids = list(jobs.values_list("pk", flat=True)[: self.concurrency])
+                        if job_ids:
+                            PeasyJobQueue.objects.filter(pk__in=job_ids).update(
+                                status=PeasyJobQueue.ONGOING, started=timezone.now(), status_msg="Starting..."
+                            )
 
                         if job_ids:
                             executor.map(self.run_job_command_with_pid_tracking, job_ids)
