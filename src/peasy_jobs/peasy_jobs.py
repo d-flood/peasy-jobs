@@ -1,27 +1,19 @@
+import inspect
 import logging
 import os
 import pickle
 import signal
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from multiprocessing import Manager
+from multiprocessing import Manager, Process
 from time import sleep
 
 from django.conf import settings
 from django.core.management import call_command
-from django.db import connection, transaction
+from django.db import transaction
 from django.utils import timezone
 
 from peasy_jobs.models import PeasyJobQueue
 
 logger = logging.getLogger(__name__)
-
-if not logger.handlers:
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-    logger.setLevel(logging.INFO)
 
 manager = Manager()
 pids_map = manager.dict()
@@ -32,7 +24,7 @@ PEASY_MAX_COMPLETED = 10
 PEASY_MAX_FAILED = 10
 PEASY_MAX_CANCELLED = 10
 PEASY_POLLING_INTERVAL = 2
-PEASY_CONCURRENCY = 1
+PEASY_MAX_CONCURRENCY = 1
 PEASY_WORKER_TYPE = "process"
 PEASY_SHUTDOWN_TIMEOUT = 30
 
@@ -85,7 +77,7 @@ class PeasyJob:
                 raise ValueError("PEASY_CONCURRENCY must be greater than or equal to 1.")
             self.concurrency = settings.PEASY_MAX_CONCURRENCY
         else:
-            self.concurrency = PEASY_CONCURRENCY
+            self.concurrency = PEASY_MAX_CONCURRENCY
         # whether to use threads or processes for concurrent job execution
         if hasattr(settings, "PEASY_WORKER_TYPE"):
             if settings.PEASY_WORKER_TYPE not in ("thread", "process"):
@@ -168,10 +160,12 @@ class PeasyJob:
             kwargs = {}
         try:
             result = None
-            try:  # try to inject job_pk into the job function
-                result = self.job_definitions[job_name](*args, job_pk=job_pk, **kwargs)
-            except TypeError:  # user has chosen not to accept the injected job_pk
-                result = self.job_definitions[job_name](*args, **kwargs)
+            job_func = self.job_definitions[job_name]
+            signature = inspect.signature(job_func)
+            if "job_pk" in signature.parameters:  # user has chosen to accept the injected job_pk
+                result = job_func(*args, job_pk=job_pk, **kwargs)
+            else:  # user has chosen not to accept the injected job_pk
+                result = job_func(*args, **kwargs)
         except Exception as e:
             logger.exception(e)
             PeasyJobQueue.objects.filter(pk=job_pk).update(
@@ -199,31 +193,6 @@ class PeasyJob:
             status=PeasyJobQueue.CANCELLED,
             status_msg="Cancelled",
         )
-
-    def run_job_command(self, job_pk: int):
-        try:
-            call_command("execute_job", job_pk)
-        except Exception as e:
-            logger.exception(e)
-            PeasyJobQueue.objects.filter(pk=job_pk).update(
-                status=PeasyJobQueue.FAILED,
-                status_msg=f"Failed: {e}",
-            )
-        finally:
-            connection.close()
-
-    def run_job_command_with_pid_tracking(self, job_id):
-        pid = os.getpid()
-        pids_map[job_id] = pid
-        self._active_processes[pid] = job_id
-        try:
-            self.run_job_command(job_id)
-        finally:
-            if pid in self._active_processes:
-                del self._active_processes[pid]
-            if job_id in pids_map:
-                del pids_map[job_id]
-            connection.close()
 
     def terminate_child_process(self, job_id):
         """Gracefully terminate a child process."""
@@ -265,88 +234,89 @@ class PeasyJob:
             self._shutdown_start_time = timezone.now()
 
     def run(self, *, exit_when_queue_empty: bool):
+        logger.info("Starting PeasyJob...")
         signal.signal(signal.SIGINT, self.sigint_handler)
         signal.signal(signal.SIGTERM, self.sigint_handler)
 
-        executor_class = ThreadPoolExecutor if self.worker_type == "thread" else ProcessPoolExecutor
+        running_processes = {}  # job_id -> Process mapping
 
-        with executor_class(max_workers=self.concurrency) as executor:
-            while self.running:
-                try:
-                    # Check shutdown timeout
-                    if self.shutting_down:
-                        if not self._active_processes:
-                            logger.info("All jobs completed. Shutting down...")
-                            self.running = False
-                            break
+        while self.running:
+            try:
+                # Cleanup finished processes
+                finished = []
+                for job_id, process in running_processes.items():
+                    if not process.is_alive():  # Process has finished
+                        process.join()  # Clean up the process
+                        finished.append(job_id)
+                for job_id in finished:
+                    del running_processes[job_id]
 
-                        elapsed = (timezone.now() - self._shutdown_start_time).total_seconds()
-                        if elapsed >= self.shutdown_timeout:
-                            logger.info("Shutdown timeout reached. Terminating remaining jobs...")
-                            # Cleanup and update status of remaining jobs
-                            to_terminate = PeasyJobQueue.objects.filter(status=PeasyJobQueue.ONGOING)
-                            if to_terminate.exists():
-                                logger.info(f"Terminating {to_terminate.count()} remaining jobs...")
-                                to_terminate.update(
-                                    status=PeasyJobQueue.FAILED,
-                                    status_msg="Job interrupted - shutdown timeout reached",
-                                    completed=timezone.now(),
-                                )
-                                for job_pid in list(pids_map.keys()):
-                                    self.terminate_child_process(job_pid)
-                            self.running = False
-                            break
+                # Handle shutdown
+                if self.shutting_down:
+                    if not running_processes:
+                        logger.info("All jobs completed. Shutting down...")
+                        self.running = False
+                        break
 
-                        sleep(0.5)  # Short sleep while waiting for jobs to complete
-                        continue
+                    elapsed = (timezone.now() - self._shutdown_start_time).total_seconds()
+                    if elapsed >= self.shutdown_timeout:
+                        logger.info("Shutdown timeout reached. Terminating remaining jobs...")
+                        for job_id in running_processes:
+                            self.terminate_child_process(job_id)
+                        self.running = False
+                        break
 
-                    # Handle cancelled jobs
-                    cancelled_ongoing_jobs = PeasyJobQueue.objects.filter(
-                        status=PeasyJobQueue.CANCELLED, started__isnull=False, completed__isnull=True
-                    )
-                    for job in cancelled_ongoing_jobs:
-                        self.terminate_child_process(job.pk)
-                        with transaction.atomic():
-                            job.completed = timezone.now()
-                            job.status_msg = "Cancelled"
-                            job.save()
+                    sleep(0.5)
+                    continue
 
-                    # Only process new jobs if not shutting down
-                    if not self.shutting_down:
-                        # Check if we should exit due to empty queue
-                        if exit_when_queue_empty:
-                            if not PeasyJobQueue.objects.filter(
-                                status__in=(PeasyJobQueue.ENQUEUED, PeasyJobQueue.ONGOING)
-                            ).exists():
-                                logger.info("Queue is empty. Exiting as requested...")
-                                self.running = False
-                                break
-
-                        jobs = PeasyJobQueue.objects.filter(status=PeasyJobQueue.ENQUEUED)
-                        job_ids = list(jobs.values_list("pk", flat=True)[: self.concurrency])
-                        if job_ids:
-                            PeasyJobQueue.objects.filter(pk__in=job_ids).update(
-                                status=PeasyJobQueue.ONGOING, started=timezone.now(), status_msg="Starting..."
-                            )
-
-                        if job_ids:
-                            executor.map(self.run_job_command_with_pid_tracking, job_ids)
-                        else:
-                            sleep(self.polling_interval)
-
-                except Exception as e:
-                    logger.exception(e)
-                    sleep(self.polling_interval)
-
-            # Only handle remaining ongoing jobs if we didn't already do it in timeout
-            if not self.shutting_down:
-                # Cleanup on normal shutdown
-                for job_pid in list(pids_map.keys()):
-                    self.terminate_child_process(job_pid)
-
-                PeasyJobQueue.objects.filter(status=PeasyJobQueue.ONGOING).update(
-                    status=PeasyJobQueue.FAILED, status_msg="Job interrupted during shutdown", completed=timezone.now()
+                # Handle cancelled jobs
+                cancelled_ongoing_jobs = PeasyJobQueue.objects.filter(
+                    status=PeasyJobQueue.CANCELLED, started__isnull=False, completed__isnull=True
                 )
+                for job in cancelled_ongoing_jobs:
+                    self.terminate_child_process(job.pk)
+                    with transaction.atomic():
+                        job.completed = timezone.now()
+                        job.status_msg = "Cancelled"
+                        job.save()
+
+                # Check if we should exit due to empty queue
+                if exit_when_queue_empty:
+                    if not PeasyJobQueue.objects.filter(
+                        status__in=(PeasyJobQueue.ENQUEUED, PeasyJobQueue.ONGOING)
+                    ).exists():
+                        logger.info("Queue is empty. Exiting as requested...")
+                        self.running = False
+                        break
+
+                # Start new jobs if capacity available
+                if len(running_processes) < self.concurrency:
+                    jobs = PeasyJobQueue.objects.filter(status=PeasyJobQueue.ENQUEUED)
+                    available_slots = self.concurrency - len(running_processes)
+                    for job in jobs[:available_slots]:
+                        logger.info(f"Starting job {job.pk}")
+                        job.status = PeasyJobQueue.ONGOING
+                        job.started = timezone.now()
+                        job.status_msg = "Starting..."
+                        job.save()
+
+                        # Create and start a new process running the django command
+                        process = Process(target=call_command, args=("execute_job", job.pk), name=f"job-{job.pk}")
+                        process.start()
+                        running_processes[job.pk] = process
+                        pids_map[job.pk] = process.pid
+                        self._active_processes[process.pid] = job.pk
+
+                sleep(self.polling_interval)
+
+            except Exception as e:
+                logger.exception(e)
+                sleep(self.polling_interval)
+
+        # Cleanup remaining processes
+        for job_id, process in running_processes.items():
+            self.terminate_child_process(job_id)
+            process.join()  # Wait for process to finish cleanup
 
 
 peasy = PeasyJob()
