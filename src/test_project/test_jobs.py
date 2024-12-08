@@ -5,11 +5,12 @@ from peasy_jobs.models import PeasyJobQueue
 from peasy_jobs.peasy_jobs import peasy
 from test_project.jobs import job_should_fail, job_should_succeed
 
+peasy.test_mode = True
+
 
 @pytest.fixture(autouse=True)
 def reset_peasy():
-    """Reset the peasy job runner state between tests.
-    In production, the job runner runs in a separate process."""
+    """Reset the peasy job runner state between tests."""
     yield
     peasy.running = True
     peasy.shutting_down = False

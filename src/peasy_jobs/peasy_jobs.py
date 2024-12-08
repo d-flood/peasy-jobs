@@ -100,6 +100,7 @@ class PeasyJob:
         self.shutting_down = False
         self._shutdown_start_time = None
         self._active_processes = manager.dict()
+        self.test_mode = False
 
     def register_job_definition(self, func):
         """Add a callable to the job dictionary."""
@@ -300,12 +301,16 @@ class PeasyJob:
                         job.status_msg = "Starting..."
                         job.save()
 
-                        # Create and start a new process running the django command
-                        process = Process(target=call_command, args=("execute_job", job.pk), name=f"job-{job.pk}")
-                        process.start()
-                        running_processes[job.pk] = process
-                        pids_map[job.pk] = process.pid
-                        self._active_processes[process.pid] = job.pk
+                        if self.test_mode:
+                            # Run job directly in same process for tests
+                            self.execute_job(job.pk)
+                        else:
+                            # Create and start a new process for production
+                            process = Process(target=call_command, args=("execute_job", job.pk), name=f"job-{job.pk}")
+                            process.start()
+                            running_processes[job.pk] = process
+                            pids_map[job.pk] = process.pid
+                            self._active_processes[process.pid] = job.pk
 
                 sleep(self.polling_interval)
 
