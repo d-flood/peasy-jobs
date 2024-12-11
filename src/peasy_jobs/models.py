@@ -1,3 +1,4 @@
+from django.contrib.auth import get_user_model
 from django.db import models
 from django.utils import dateformat
 
@@ -22,6 +23,7 @@ class PeasyJobQueue(models.Model):
     )
 
     job_name = models.CharField(max_length=255, null=False)
+    user = models.ForeignKey(get_user_model(), on_delete=models.CASCADE, null=True)
     pickled_args = models.BinaryField(null=True)
     pickled_kwargs = models.BinaryField(null=True)
     result = models.BinaryField(null=True)
